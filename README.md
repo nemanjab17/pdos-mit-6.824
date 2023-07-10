@@ -1,5 +1,5 @@
 # pdos-mit-6.824
-My implementation of Lab excersises in distributed systems engineering from https://pdos.csail.mit.edu/6.824/index.html
+My implementation of Lab excersises in distributed systems engineering from MIT: https://pdos.csail.mit.edu/6.824/index.html
 
 Labs:
 - [x] Lab 1: MapReduce
