@@ -24,6 +24,26 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+type GetJobArgs struct {
+
+}
+
+type GetJobReply struct {
+	Status string
+	Job string
+	Id int
+	NReduce int
+	Phase int
+}
+
+type FinishJobArgs struct {
+	Id int
+}
+
+type FinishJobReply struct {
+
+}
+
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
