@@ -79,8 +79,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	rf.mu.Lock()
 	isleader = rf.role == 2
 	term = rf.currentTerm
+	rf.mu.Unlock()
 	return term, isleader
 }
 
@@ -125,42 +127,48 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) setFollower(withLock bool) {
 	if withLock {
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
 	}
 	rf.role = 0
 	rf.votedFor = -1
+	if withLock {
+		rf.mu.Unlock()
+	}
 }
 
 func (rf *Raft) setCandidate(withLock bool) {
 	if withLock {
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
 	}
 	rf.role = 1
 	rf.votedFor = rf.me
 	rf.votes = 1
 	rf.currentTerm++
 	rf.lastHeartbeat = time.Now()
+	if withLock {
+		rf.mu.Unlock()
+	}
 }
 
 func (rf *Raft) setLeader(withLock bool) {
 	if withLock {
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
 	}
 	rf.role = 2
 	rf.votedFor = -1
 	rf.votes = 0
 	rf.lastHeartbeat = time.Now()
+	if withLock {
+		rf.mu.Unlock()
+	}
 }
 
 func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
 		rf.mu.Lock()
-		rf.mu.Unlock()
 		if rf.role == 2 {
 			rf.sendHeartbeat()
 		}
+		rf.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
 	}
 }
@@ -175,9 +183,13 @@ func (rf *Raft) sendHeartbeat() {
 }
 
 func (rf *Raft) sendAppendEntries(i int) {
+	rf.mu.Lock()
+	currentTerm := rf.currentTerm
+	me := rf.me
+	rf.mu.Unlock()
 	args := &AppendEntriesArgs{
-		Term:     rf.currentTerm,
-		LeaderId: rf.me,
+		Term:     currentTerm,
+		LeaderId: me,
 		Entries:  nil,
 	}
 	reply := &AppendEntriesReply{}
@@ -194,9 +206,13 @@ func (rf *Raft) sendAppendEntries(i int) {
 }
 
 func (rf *Raft) requestVote(i int) {
+	rf.mu.Lock()
+	currentTerm := rf.currentTerm
+	me := rf.me
+	rf.mu.Unlock()
 	args := &RequestVoteArgs{
-		Term:        rf.currentTerm,
-		CandidateId: rf.me,
+		Term:        currentTerm,
+		CandidateId: me,
 	}
 	reply := &RequestVoteReply{}
 	ok := rf.sendRequestVote(i, args, reply)
@@ -250,16 +266,18 @@ type AppendEntriesReply struct {
 
 // AppendEntries RPC handler.
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-
-	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
+	rf.mu.Lock()
+	currentTerm := rf.currentTerm
+	rf.mu.Unlock()
+	if args.Term < currentTerm {
+		reply.Term = currentTerm
 		reply.Success = false
 		return
 	}
 
 	//heartbeat
 	if len(args.Entries) == 0 {
-		reply.Term = rf.currentTerm
+		reply.Term = currentTerm
 		reply.Success = true
 		rf.mu.Lock()
 		rf.lastHeartbeat = time.Now()
@@ -288,31 +306,34 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	if args.Term < rf.currentTerm {
+	rf.mu.Lock()
+	currentTerm := rf.currentTerm
+	votedFor := rf.votedFor
+	rf.mu.Unlock()
+	if args.Term < currentTerm {
 		// this leader is stale
-		reply.Term = rf.currentTerm
+		reply.Term = currentTerm
 		reply.VoteGranted = false
 		return
 	}
-	if args.Term > rf.currentTerm {
+	if args.Term > currentTerm {
 		// this leader is newer, revert to follower
 		rf.mu.Lock()
 		rf.currentTerm = args.Term
 		rf.setFollower(false)
 		rf.mu.Unlock()
 	}
-	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+	if votedFor == -1 || votedFor == args.CandidateId {
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
 		rf.currentTerm = args.Term
 		rf.votedFor = args.CandidateId
-		reply.Term = rf.currentTerm
+		reply.Term = currentTerm
 		reply.VoteGranted = true
-
 		rf.lastHeartbeat = time.Now() //reset heartbeat timer
+		rf.mu.Unlock()
 		return
 	} else {
-		reply.Term = rf.currentTerm
+		reply.Term = currentTerm
 		reply.VoteGranted = false
 		return
 	}
@@ -400,9 +421,12 @@ func (rf *Raft) ticker() {
 
 		ms := 500 + (rand.Int63() % 350)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+		rf.mu.Lock()
 		last := rf.lastHeartbeat
+		role := rf.role
+		rf.mu.Unlock()
 		now := time.Now()
-		if now.Sub(last) > time.Duration(ms)*time.Millisecond && rf.role != 2 {
+		if now.Sub(last) > time.Duration(ms)*time.Millisecond && role != 2 {
 			rf.startElect()
 		}
 
@@ -426,9 +450,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.mu.Lock()
 	rf.currentTerm = 0
 	rf.lastHeartbeat = time.Now()
-	rf.setFollower(true)
+	rf.setFollower(false)
+	rf.mu.Unlock()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
