@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
 )
@@ -165,26 +166,29 @@ func (rf *Raft) setLeader(withLock bool) {
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.nextIndex = make([]int, len(rf.peers))
 	for i := range rf.peers {
-		rf.nextIndex[i] = len(rf.log) + 1
+		rf.nextIndex[i] = rf.lastLogIndex()
 	}
 	if withLock {
 		rf.mu.Unlock()
 	}
-	rf.sendAppendEntriesAll(nil, 0, withLock)
+	rf.sendAppendEntriesAll(false)
 }
 
 func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
 		rf.mu.Lock()
 		if rf.role == 2 {
-			rf.sendAppendEntriesAll(nil, 0, false)
+			// send entries that have not been replicated
+			// if there is no new entries, send empty entries
+			// to prevent other servers from starting election
+			rf.sendAppendEntriesAll(false)
 		}
 		rf.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-func (rf *Raft) sendAppendEntriesAll(entries []LogEntry, lastLogIndex int, withLock bool) {
+func (rf *Raft) sendAppendEntriesAll(withLock bool) {
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
@@ -192,25 +196,26 @@ func (rf *Raft) sendAppendEntriesAll(entries []LogEntry, lastLogIndex int, withL
 		if withLock {
 			rf.mu.Lock()
 		}
-		if len(entries) > 0 {
-		}
+		go rf.sendAppendEntries(i)
 		
-		if len(entries) == 0 {
-			go rf.sendAppendEntries(i, entries)
-		} else if lastLogIndex == 0 || lastLogIndex + 1 >= rf.nextIndex[i] {
-			go rf.sendAppendEntries(i, entries)
-		}
 		if withLock {
 			rf.mu.Unlock()
 		}
 	}
 }
 
-func (rf *Raft) sendAppendEntries(i int, entries []LogEntry) {
+func (rf *Raft) sendAppendEntries(i int) {
 	rf.mu.Lock()
 	currentTerm := rf.currentTerm
 	me := rf.me
 	prevLogIndex, prevLogTerm := rf.getLastIdxTerm(i)
+	
+	// send all entries that have not been replicated to server i
+	entries := make([]LogEntry, 0)
+	if rf.lastLogIndex() >= rf.nextIndex[i] {
+		entries = rf.log[rf.nextIndex[i]-1:]
+	}
+
 	rf.mu.Unlock()
 	args := &AppendEntriesArgs{
 		Term:     currentTerm,
@@ -261,11 +266,9 @@ func (rf *Raft) sendAppendEntries(i int, entries []LogEntry) {
 
 			} else {
 				// if log is not up to date, decrement nextIndex and retry
-				if rf.nextIndex[i] > 1 {
+				if rf.nextIndex[i] > 1{
 					rf.nextIndex[i]--
 				}
-				go rf.sendAppendEntries(i, entries)
-				
 			}
 			
 		}
@@ -274,7 +277,7 @@ func (rf *Raft) sendAppendEntries(i int, entries []LogEntry) {
 	} else {
 		// failed to send, try again later
 		time.Sleep(100 * time.Millisecond)
-		go rf.sendAppendEntries(i, entries)
+		go rf.sendAppendEntries(i)
 	}
 }
 
@@ -297,6 +300,10 @@ func (rf *Raft) getPrevIdxTerm(i int) (int, int) {
 		prevLogTerm = rf.log[prevLogIndex].Term
 	}
 	return prevLogIndex, prevLogTerm
+}
+
+func (rf *Raft) lastLogIndex() int {
+	return len(rf.log) + 1
 }
 
 func (rf *Raft) requestVote(i int) {
@@ -412,6 +419,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				break
 			}
 		}
+
+		// reject entries 
+
 		// append any new entries not already in the log
 		for i := 0; i < len(args.Entries); i++ {
 			if args.PrevLogIndex + i + 1 >= len(rf.log) {
@@ -445,11 +455,14 @@ func (rf *Raft) updateCommitIdx(args *AppendEntriesArgs) {
 		} else {
 			rf.commitIndex = len(rf.log)
 		}
-		if rf.commitIndex > rf.lastApplied {
-			rf.applyCh <- ApplyMsg{
-				CommandValid: true,
-				Command:      rf.log[rf.commitIndex-1].Command,
-				CommandIndex: rf.commitIndex,
+		if rf.commitIndex > rf.lastApplied{
+			// apply all entries up to commit index
+			for i := rf.lastApplied; i < rf.commitIndex; i++ {
+				rf.applyCh <- ApplyMsg{
+					CommandValid: true,
+					Command:      rf.log[i].Command,
+					CommandIndex: i + 1,
+				}
 			}
 			rf.lastApplied = rf.commitIndex
 		}
@@ -589,11 +602,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	isLeader = rf.role == 2
 	if isLeader {
-		index = len(rf.log) + 1
+		index = rf.lastLogIndex()
 		rf.log = append(rf.log, entries...)
 		rf.matchIndex[rf.me] = len(rf.log)
 		rf.mu.Unlock()
-		rf.sendAppendEntriesAll(entries, index - 1, true)
+		// rf.sendAppendEntriesAll(entries, index - 1, true)
 	} else {
 		rf.mu.Unlock()
 	}
