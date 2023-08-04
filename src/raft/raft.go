@@ -243,8 +243,9 @@ func (rf *Raft) sendAppendEntries(i int) {
 				rf.nextIndex[i] = rf.matchIndex[i] + 1
 				// if majority of servers have replicated entries, commit
 				// and send commit message to applyCh
+				
 				if rf.commitIndex < rf.matchIndex[i] {
-					count := 0
+					count := 1
 					for j := range rf.peers {
 						if j == rf.me {
 							continue
@@ -253,13 +254,10 @@ func (rf *Raft) sendAppendEntries(i int) {
 							count++
 						}
 					}
-					if count >= len(rf.peers)/2 {
+					if count > len(rf.peers)/2 {
 						rf.commitIndex = rf.matchIndex[i]
-						rf.applyCh <- ApplyMsg{
-							CommandValid: true,
-							Command:      rf.log[rf.commitIndex - 1].Command,
-							CommandIndex: rf.commitIndex,
-						}
+						// apply all entries that have been committed
+						rf.applyCommited()
 
 					}
 				}
@@ -420,15 +418,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 
-		// reject entries 
 
 		// append any new entries not already in the log
 		for i := 0; i < len(args.Entries); i++ {
-			if args.PrevLogIndex + i + 1 >= len(rf.log) {
-				rf.log = append(rf.log, args.Entries[i:]...)
-				break
+			if args.PrevLogIndex + i + 1 > len(rf.log) {
+				rf.log = append(rf.log, args.Entries[i])
 			}
 		}
+
 
 		rf.mu.Unlock()
 		reply.Term = currentTerm
@@ -455,20 +452,26 @@ func (rf *Raft) updateCommitIdx(args *AppendEntriesArgs) {
 		} else {
 			rf.commitIndex = len(rf.log)
 		}
-		if rf.commitIndex > rf.lastApplied{
-			// apply all entries up to commit index
-			for i := rf.lastApplied; i < rf.commitIndex; i++ {
-				rf.applyCh <- ApplyMsg{
-					CommandValid: true,
-					Command:      rf.log[i].Command,
-					CommandIndex: i + 1,
-				}
-			}
-			rf.lastApplied = rf.commitIndex
-		}
+		// apply all entries up to commit index
+		rf.applyCommited()
 
 	}
 	rf.mu.Unlock()
+}
+
+func (rf *Raft) applyCommited() {
+	if rf.commitIndex > rf.lastApplied {
+
+		for i := rf.lastApplied; i < rf.commitIndex; i++ {
+
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[i].Command,
+				CommandIndex: i + 1,
+			}
+		}
+		rf.lastApplied = rf.commitIndex
+	}
 }
 
 // example RequestVote RPC arguments structure.
