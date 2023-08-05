@@ -76,6 +76,7 @@ type Raft struct {
 type LogEntry struct {
 	Term    int
 	Command interface{}
+	Id	  int
 }
 
 // return currentTerm and whether this server
@@ -136,6 +137,9 @@ func (rf *Raft) setFollower(withLock bool) {
 	}
 	rf.role = 0
 	rf.votedFor = -1
+	rf.votes = 0
+	rf.lastHeartbeat = time.Now()
+
 	if withLock {
 		rf.mu.Unlock()
 	}
@@ -206,6 +210,10 @@ func (rf *Raft) sendAppendEntriesAll(withLock bool) {
 
 func (rf *Raft) sendAppendEntries(i int) {
 	rf.mu.Lock()
+	if rf.role != 2 {
+		rf.mu.Unlock()
+		return
+	}
 	currentTerm := rf.currentTerm
 	me := rf.me
 	prevLogIndex, prevLogTerm := rf.getLastIdxTerm(i)
@@ -229,6 +237,10 @@ func (rf *Raft) sendAppendEntries(i int) {
 	ok := rf.peers[i].Call("Raft.AppendEntries", args, reply)
 	if ok {
 		rf.mu.Lock()
+		if rf.role != 2 {
+			rf.mu.Unlock()
+			return
+		}
 		if reply.Term > rf.currentTerm {
 			// stale term, revert to follower
 			rf.currentTerm = reply.Term
@@ -406,14 +418,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.mu.Unlock()
 			return
 		}
-		// TODO: check if there is a conflict
-		// if there is a conflict, delete the conflicting entry and all that follow it
+
 		for i := 0; i < len(args.Entries); i++ {
-			if args.PrevLogIndex + i + 1 >= len(rf.log) {
-				break
-			}
-			if args.Entries[i].Term != rf.log[args.PrevLogIndex + i + 1].Term {
-				rf.log = rf.log[:args.PrevLogIndex + i + 1]
+			// if the entry at the same index is different, delete it and all that follow
+			if args.PrevLogIndex + i + 1 <= len(rf.log) && rf.log[args.PrevLogIndex + i].Term != args.Entries[i].Term {
+				rf.log = rf.log[:args.PrevLogIndex + i]
 				break
 			}
 		}
@@ -446,6 +455,12 @@ func (rf *Raft) updateCommitIdx(args *AppendEntriesArgs) {
 		return 
 	}
 
+	// check if follower has conflicting entry
+	if args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex - 1].Term != args.PrevLogTerm {
+		rf.mu.Unlock()
+		return
+	}
+
 	if args.LeaderCommit > rf.commitIndex{
 		if args.LeaderCommit < len(rf.log) {
 			rf.commitIndex = args.LeaderCommit
@@ -461,7 +476,6 @@ func (rf *Raft) updateCommitIdx(args *AppendEntriesArgs) {
 
 func (rf *Raft) applyCommited() {
 	if rf.commitIndex > rf.lastApplied {
-
 		for i := rf.lastApplied; i < rf.commitIndex; i++ {
 
 			rf.applyCh <- ApplyMsg{
@@ -601,7 +615,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	term = rf.currentTerm
 	entries := make([]LogEntry, 1)
-	entries[0] = LogEntry{term, command}
+	entries[0] = LogEntry{term, command, rf.lastLogIndex() + 1}
 	rf.mu.Lock()
 	isLeader = rf.role == 2
 	if isLeader {
