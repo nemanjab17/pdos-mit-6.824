@@ -234,6 +234,7 @@ func (rf *Raft) sendAppendEntries(i int) {
 		LeaderCommit: rf.commitIndex,
 	}
 	reply := &AppendEntriesReply{}
+	
 	ok := rf.peers[i].Call("Raft.AppendEntries", args, reply)
 	if ok {
 		rf.mu.Lock()
@@ -381,6 +382,7 @@ type AppendEntriesReply struct {
 // AppendEntries RPC handler.
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
+	rf.lastHeartbeat = time.Now()
 	currentTerm := rf.currentTerm
 	rf.mu.Unlock()
 	if args.Term < currentTerm {
@@ -395,9 +397,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 		// update commit index
 		rf.updateCommitIdx(args)
-		rf.mu.Lock()
-		rf.lastHeartbeat = time.Now()
-		rf.mu.Unlock()
 		return
 	} else {
 		rf.mu.Lock()
